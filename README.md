@@ -55,7 +55,7 @@ character.data.extensions.world
 酒馆里点 **扩展** → **安装扩展** → 填入本仓库地址，然后点「只给我安装」：
 
 ```
-https://github.com/<你的用户名>/sillytavern-visual-worldbook
+https://github.com/cccscccc/sillytavern-visual-worldbook
 ```
 
 装好后**刷新酒馆页面**。
