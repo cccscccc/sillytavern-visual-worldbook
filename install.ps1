@@ -1,4 +1,4 @@
-# 世界书卡面管理 —— 安装 / 卸载脚本
+﻿# 世界书卡面管理 —— 安装 / 卸载脚本
 #
 # 用法（在本文件夹里右键「使用 PowerShell 运行」，或者拖到 PowerShell 窗口里）：
 #
@@ -10,7 +10,7 @@
 # 不碰酒馆的其它任何文件，不碰你的角色卡和世界书。
 
 param(
-    [ValidateSet('install', 'uninstall', 'status')]
+    [ValidateSet('install', 'update', 'uninstall', 'status')]
     [string]$Action = 'status',
 
     # 酒馆的安装根目录。默认留空，脚本会自己去找；
@@ -147,7 +147,8 @@ switch ($Action) {
         New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
 
         # 只拷插件本体，跳过自检脚本和备份目录
-        $exclude = @('_selftest.mjs', 'install.ps1')
+        $exclude = @('_selftest.mjs', '_selftest_toggle.mjs', '_verify_api.mjs',
+                     '_verify_load.mjs', 'check.mjs', 'install.ps1')
         Get-ChildItem $SourceDir -File | Where-Object { $exclude -notcontains $_.Name } | ForEach-Object {
             Copy-Item $_.FullName -Destination $TargetDir -Force
         }
@@ -161,6 +162,42 @@ switch ($Action) {
         Write-Host '  1. 刷新酒馆页面（或重启酒馆）'
         Write-Host '  2. 点右上角的插头按钮打开扩展设置'
         Write-Host '  3. 找到「世界书卡面管理」，点「打开卡面面板」'
+    }
+
+    'update' {
+        Write-Head '更新世界书卡面管理'
+
+        $victim = if ($InstalledDir) { $InstalledDir } else { $TargetDir }
+
+        if (-not (Test-Path $victim)) {
+            Write-Host '这个扩展还没装过，没法更新。' -ForegroundColor Yellow
+            Write-Host '请改用：.\install.ps1 -Action install' -ForegroundColor Cyan
+            exit 0
+        }
+
+        # 备份旧的，出问题能退回去
+        $stamp  = Get-Date -Format 'yyyyMMdd_HHmmss'
+        $backup = Join-Path $SourceDir "_backup_$stamp"
+        Move-Item $victim $backup
+        Write-Host "旧版本已备份到：$backup" -ForegroundColor Green
+
+        New-Item -ItemType Directory -Path $victim -Force | Out-Null
+
+        # 只拷插件本体，跳过自检脚本和备份目录
+        $exclude = @('_selftest.mjs', '_selftest_toggle.mjs', '_verify_api.mjs',
+                     '_verify_load.mjs', 'check.mjs', 'install.ps1')
+        Get-ChildItem $SourceDir -File | Where-Object { $exclude -notcontains $_.Name } | ForEach-Object {
+            Copy-Item $_.FullName -Destination $victim -Force
+        }
+        Get-ChildItem $SourceDir -Directory | Where-Object { $_.Name -notlike '_backup_*' } | ForEach-Object {
+            Copy-Item $_.FullName -Destination $victim -Recurse -Force
+        }
+
+        Write-Host '更新完成。' -ForegroundColor Green
+        Write-Host ''
+        Write-Host '下一步：刷新酒馆页面。' -ForegroundColor Cyan
+        Write-Host "如果新版有问题，旧版在：$backup" -ForegroundColor Cyan
+        Write-Host "退回去：删掉 $victim，再把备份改回这个名字即可。"
     }
 
     'uninstall' {

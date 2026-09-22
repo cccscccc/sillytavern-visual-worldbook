@@ -92,6 +92,7 @@ https://github.com/cccscccc/sillytavern-visual-worldbook
 
 ```powershell
 .\install.ps1 -Action install      # 安装
+.\install.ps1 -Action update       # 更新（会先备份旧版）
 .\install.ps1 -Action uninstall    # 卸载
 .\install.ps1 -Action status       # 查看装没装
 ```
@@ -163,9 +164,10 @@ https://github.com/cccscccc/sillytavern-visual-worldbook
 仓库内附带不依赖浏览器的自检脚本：
 
 ```bash
-node _selftest.mjs          # 配对逻辑，15 项
-node _selftest_toggle.mjs   # 开关逻辑，22 项
-node _verify_load.mjs       # 真加载模拟（验证能装能跑）
+node _selftest.mjs              # 配对逻辑，15 项
+node _selftest_toggle.mjs       # 开关逻辑，22 项
+node _verify_load.mjs           # 真加载模拟（验证能装能跑）
+node _verify_ps1_encoding.mjs   # PowerShell 脚本编码，10 项
 ```
 
 - `_selftest.mjs` 覆盖配对逻辑的 15 项断言（正常绑定、重名导入产生的后缀、
@@ -174,6 +176,8 @@ node _verify_load.mjs       # 真加载模拟（验证能装能跑）
   不重复操作、显式指定、名字含逗号的兜底、失败时不假装成功、空名字等）。
 - `_verify_load.mjs` 会造一棵假的酒馆目录树真 `import()` 一次，
   确认扩展能加载、hook 存在、`init` 能跑起来。
+- `_verify_ps1_encoding.mjs` 确认 `install.ps1` 有 UTF-8 BOM（没有的话
+  Windows PowerShell 5.1 会把中文当 GBK 读，脚本直接跑不起来）。
 
 ---
 

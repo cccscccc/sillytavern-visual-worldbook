@@ -73,6 +73,7 @@ https://github.com/cccscccc/sillytavern-visual-worldbook
 
 ```powershell
 .\install.ps1 -Action install      # 安装
+.\install.ps1 -Action update       # 更新（会先备份旧版）
 .\install.ps1 -Action uninstall    # 卸载
 .\install.ps1 -Action status       # 看装了没
 ```
