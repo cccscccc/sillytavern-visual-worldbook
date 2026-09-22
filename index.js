@@ -15,10 +15,12 @@
  *   面板里显示的名字是"拼好的展示名"，磁盘上的文件名一个字不动。
  */
 
-// 路径基准说明：
+// 路径基准说明（已按 SillyTavern 1.18.0 实测校准）：
 // 本扩展位于 public/scripts/extensions/third-party/worldbook-gallery/index.js
-// 因此向上三层即可回到 public/scripts/，与内置扩展 memory/ 的写法一致。
-// 参考：public/scripts/extensions/memory/index.js
+//   script.js      实际在 public/script.js         → 须向上 4 层
+//   world-info.js  实际在 public/scripts/           → 须向上 3 层
+//   extensions.js  实际在 public/scripts/           → 须向上 3 层
+// 注意：script.js 在 public/ 下，不在 public/scripts/ 下，两者层数不同。
 import {
     eventSource,
     event_types,
@@ -26,9 +28,9 @@ import {
     getThumbnailUrl,
     characters,
     saveSettingsDebounced,
-} from '../../../script.js';
+} from '../../../../script.js';
 import { world_names, openWorldInfoEditor } from '../../../world-info.js';
-import { extension_settings } from '../../extensions.js';
+import { extension_settings } from '../../../extensions.js';
 
 const MODULE_NAME = 'worldbook-gallery';
 const LOG_PREFIX = '[Worldbook Gallery]';
@@ -513,11 +515,23 @@ function buildSettingsUI() {
     });
 }
 
-function init() {
+/**
+ * 扩展入口。
+ *
+ * 必须具名导出 `init`，因为 manifest.json 里写的是：
+ *     "hooks": { "activate": "init" }
+ * 酒馆加载时会去模块里找这个导出的函数并调用它
+ * （见 public/scripts/extensions.js 第 438 行附近的 callExtensionHook）。
+ * 用 jQuery(...) 那种立即执行写法是找不到 init 的，会导致加载失败。
+ */
+export async function init() {
     getSettings();
+
+    // 等界面上的扩展设置容器出现再往里塞按钮，避免抢跑
+    await waitForSettingsContainer();
     buildSettingsUI();
 
-    // 卡有变动时，如果面板开着，自动重扫
+    // 卡或世界书有变动时，如果面板正开着，自动重扫
     const softRefresh = () => {
         if (panelEl && panelEl.classList.contains('wbg-open')) refresh(false);
     };
@@ -527,6 +541,7 @@ function init() {
         event_types.CHARACTER_RENAMED,
         event_types.CHARACTER_DUPLICATED,
         event_types.WORLDINFO_UPDATED,
+        event_types.WORLDINFO_ENTRIES_LOADED,
     ];
     for (const ev of events) {
         try { eventSource.on(ev, softRefresh); } catch { /* 事件不存在就跳过 */ }
@@ -535,13 +550,30 @@ function init() {
     console.log(LOG_PREFIX, '已加载');
 }
 
-jQuery(async () => {
-    try {
-        await init();
-    } catch (err) {
-        console.error(LOG_PREFIX, '初始化失败', err);
+/**
+ * 等扩展设置容器出现。
+ * 最多等约 10 秒；超时也不报错，因为可能只是这个酒馆版本用了别的容器 id。
+ */
+async function waitForSettingsContainer(timeoutMs = 10000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (document.getElementById('extensions_settings2')
+            || document.getElementById('extensions_settings')) {
+            return true;
+        }
+        await new Promise(r => setTimeout(r, 200));
     }
-});
+    console.warn(LOG_PREFIX, '没等到扩展设置容器，按钮可能没挂上去');
+    return false;
+}
 
-// 供控制台调试用
-window.WorldbookGallery = { open: openPanel, refresh, collectRows, buildIndex };
+// 供浏览器控制台调试用：
+//   WorldbookGallery.open()     打开面板
+//   WorldbookGallery.refresh()  重扫
+//   WorldbookGallery.index()    看配对结果
+window.WorldbookGallery = {
+    open: openPanel,
+    refresh,
+    collectRows,
+    index: buildIndex,
+};
