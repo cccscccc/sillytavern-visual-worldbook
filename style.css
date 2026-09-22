@@ -248,3 +248,144 @@
     color: #ffb74d;
     opacity: 0.95;
 }
+
+/* ---------- 启用状态 ---------- */
+
+/* 已开启：整个卡片亮一点，加一圈绿边 */
+.wbg-card-on {
+    border-color: #3fbf6f;
+}
+
+.wbg-card-on:hover {
+    border-color: #5ad886;
+}
+
+/* 已关闭：卡片整体压暗，和已开启的一眼区分 */
+.wbg-card-off {
+    opacity: 0.62;
+}
+
+.wbg-card-off:hover {
+    opacity: 0.85;
+}
+
+/* 卡面左下角的状态小标 */
+.wbg-state {
+    position: absolute;
+    left: 6px;
+    bottom: 6px;
+    background: rgba(0, 0, 0, 0.72);
+    color: #fff;
+    font-size: 0.72em;
+    padding: 2px 7px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    pointer-events: none;
+}
+
+.wbg-card-on .wbg-state {
+    background: rgba(20, 120, 60, 0.92);
+    border-color: rgba(120, 240, 170, 0.7);
+}
+
+.wbg-card-off .wbg-state {
+    background: rgba(60, 60, 60, 0.85);
+    border-color: rgba(255, 255, 255, 0.18);
+}
+
+/* 开关那一行 */
+.wbg-toggle-bar {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    margin-top: 4px;
+    padding-top: 6px;
+    border-top: 1px solid rgba(128, 128, 128, 0.22);
+}
+
+.wbg-toggle-label {
+    font-size: 0.76em;
+    opacity: 0.75;
+}
+
+.wbg-card-on .wbg-toggle-label {
+    color: #6fe09a;
+    opacity: 1;
+    font-weight: 600;
+}
+
+/* 开关本体 */
+.wbg-switch {
+    position: relative;
+    flex: 0 0 auto;
+    width: 34px;
+    height: 18px;
+    padding: 0;
+    border: 1px solid rgba(128, 128, 128, 0.5);
+    border-radius: 9px;
+    background: rgba(90, 90, 90, 0.55);
+    cursor: pointer;
+    transition: background 0.16s, border-color 0.16s;
+}
+
+.wbg-switch:hover {
+    border-color: rgba(200, 200, 200, 0.75);
+}
+
+.wbg-switch .wbg-switch-knob {
+    position: absolute;
+    top: 1px;
+    left: 1px;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #ddd;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+    transition: left 0.16s, background 0.16s;
+}
+
+.wbg-switch-on {
+    background: rgba(45, 160, 90, 0.9);
+    border-color: rgba(120, 240, 170, 0.85);
+}
+
+.wbg-switch-on .wbg-switch-knob {
+    left: 17px;
+    background: #fff;
+}
+
+/* ---------- 右下角小提示 ---------- */
+
+.wbg-toast {
+    position: fixed;
+    right: 20px;
+    bottom: 22px;
+    z-index: 30050;
+    padding: 9px 15px;
+    border-radius: 6px;
+    font-size: 0.92em;
+    color: #fff;
+    background: rgba(30, 30, 30, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+    opacity: 0;
+    transform: translateY(10px);
+    transition: opacity 0.18s, transform 0.18s;
+    pointer-events: none;
+    max-width: 320px;
+}
+
+.wbg-toast-show {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.wbg-toast-ok {
+    border-color: rgba(90, 216, 134, 0.75);
+    background: rgba(22, 74, 45, 0.96);
+}
+
+.wbg-toast-warn {
+    border-color: rgba(255, 183, 77, 0.75);
+    background: rgba(90, 62, 18, 0.96);
+}

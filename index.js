@@ -29,7 +29,12 @@ import {
     characters,
     saveSettingsDebounced,
 } from '../../../../script.js';
-import { world_names, openWorldInfoEditor } from '../../../world-info.js';
+import {
+    world_names,
+    selected_world_info,
+    openWorldInfoEditor,
+    onWorldInfoChange,
+} from '../../../world-info.js';
 import { extension_settings } from '../../../extensions.js';
 
 const MODULE_NAME = 'worldbook-gallery';
@@ -44,6 +49,8 @@ const defaultSettings = {
     displayStyle: 'both',
     // 是否在网格里显示没有绑定任何卡的世界书
     showOrphans: true,
+    // 是否只看当前已开启的世界书
+    onlyEnabled: false,
     // 缩略图尺寸（像素）
     thumbSize: 150,
 };
@@ -237,6 +244,101 @@ function displayName(row) {
 }
 
 // ---------------------------------------------------------------------------
+// 启用 / 停用 世界书
+// ---------------------------------------------------------------------------
+//
+// 酒馆里"世界书有没有开启"指的是「全局启用列表」——就是设置面板里
+// 「已启用的世界书（全局有效）」那个多选框，对应内部变量 selected_world_info。
+// 卡自带的世界书导入后就是加进这个全局列表的，所以这里控制的就是它。
+//
+// 实现要点：
+//   selected_world_info 虽然被导出，但 ES module 的 imported binding 是只读的，
+//   外部不能直接 push / splice。所以必须走酒馆自己导出的 onWorldInfoChange()，
+//   它会一并完成：改状态、刷新酒馆界面、弹提示、保存设置、发事件通知。
+
+/**
+ * 这本书当前启用了没。
+ */
+function isWorldEnabled(worldName) {
+    return Array.isArray(selected_world_info) && selected_world_info.includes(worldName);
+}
+
+/**
+ * 切换一本书的启用状态。
+ *
+ * @param {string} worldName 世界书名
+ * @param {boolean} [forceOn] 指定开启或关闭；不传则按当前状态取反
+ * @returns {boolean} 操作后是否处于启用状态（失败时返回原状态）
+ */
+function toggleWorld(worldName, forceOn) {
+    if (!worldName) return false;
+
+    // 世界书名字里若含逗号，酒馆的 onWorldInfoChange 会按逗号切分导致误伤，
+    // 这种情况直接用 select 元素兜底，不走那个函数。
+    const hasComma = worldName.includes(',');
+
+    const before = isWorldEnabled(worldName);
+    const wantOn = (forceOn === undefined) ? !before : Boolean(forceOn);
+
+    if (wantOn === before) return before;   // 已经是目标状态，不用动
+
+    try {
+        if (hasComma) {
+            setWorldEnabledViaSelect(worldName, wantOn);
+        } else {
+            // silent 传 false：让酒馆自己弹「已开启：xxx」的提示，
+            // 这样酒馆那边的反馈风格是统一的（我们自己也再飘一个小提示）。
+            onWorldInfoChange({ state: wantOn ? 'on' : 'off', silent: false }, worldName);
+        }
+    } catch (err) {
+        console.error(LOG_PREFIX, '切换世界书状态失败', worldName, err);
+        return before;
+    }
+
+    // 状态实际变了没，以真实数据为准
+    const after = isWorldEnabled(worldName);
+    if (after !== wantOn) {
+        // 兜底：onWorldInfoChange 没生效时，直接操作界面上的 select
+        try { setWorldEnabledViaSelect(worldName, wantOn); } catch { /* 忽略 */ }
+        return isWorldEnabled(worldName);
+    }
+
+    return after;
+}
+
+/**
+ * 兜底方案：直接操作酒馆界面上那个多选框（#world_info），
+ * 触发它自己的 change 事件，让酒馆按正常流程处理。
+ *
+ * 用在世界书名含逗号等 onWorldInfoChange 不方便处理的场合。
+ */
+function setWorldEnabledViaSelect(worldName, on) {
+    const $wi = window.jQuery ? window.jQuery('#world_info') : null;
+    if (!$wi || !$wi.length) return;
+
+    // 找到对应该名字的 option，按它的 value（索引）来选
+    let targetVal = null;
+    $wi.find('option').each(function () {
+        if (window.jQuery(this).text() === worldName) {
+            targetVal = window.jQuery(this).val();
+        }
+    });
+    if (targetVal === null) return;
+
+    const current = $wi.val();
+    let list = Array.isArray(current) ? current.map(String) : (current ? [String(current)] : []);
+    const tv = String(targetVal);
+
+    if (on) {
+        if (!list.includes(tv)) list.push(tv);
+    } else {
+        list = list.filter(v => v !== tv);
+    }
+
+    $wi.val(list).trigger('change');
+}
+
+// ---------------------------------------------------------------------------
 // 面板渲染
 // ---------------------------------------------------------------------------
 
@@ -275,6 +377,10 @@ function ensurePanel() {
                 <input type="checkbox" id="wbg-orphans" checked />
                 <span>显示未绑定的世界书</span>
             </label>
+            <label class="wbg-check">
+                <input type="checkbox" id="wbg-only-on" />
+                <span>只看已开启</span>
+            </label>
         </div>
         <div class="wbg-stats" id="wbg-stats"></div>
         <div class="wbg-body" id="wbg-body"></div>
@@ -295,6 +401,11 @@ function ensurePanel() {
         saveSettingsDebounced();
         refresh(false);
     });
+    panelEl.querySelector('#wbg-only-on').addEventListener('change', (e) => {
+        getSettings().onlyEnabled = e.target.checked;
+        saveSettingsDebounced();
+        renderGrid();
+    });
 
     return panelEl;
 }
@@ -304,6 +415,7 @@ function openPanel() {
     const s = getSettings();
     panelEl.querySelector('#wbg-style').value = s.displayStyle;
     panelEl.querySelector('#wbg-orphans').checked = s.showOrphans;
+    panelEl.querySelector('#wbg-only-on').checked = Boolean(s.onlyEnabled);
     panelEl.classList.add('wbg-open');
     refresh(true);
 }
@@ -333,7 +445,13 @@ async function refresh(withDetails) {
         if (orphan) parts.push(`${orphan} 本没有卡绑定`);
         if (missing) parts.push(`${missing} 本卡里写了但文件不存在`);
         if (embedded.length) parts.push(`${embedded.length} 张卡自带世界书`);
-        setStats(parts.join('　·　'));
+
+        // 统计行分两段存：baseText 是不随开关变的部分，
+        // 每次开合开关只要重拼后半段就行，不用重扫。
+        const statsEl = ensurePanel().querySelector('#wbg-stats');
+        statsEl.dataset.baseText = parts.join('　·　');
+        const enabledCount = rows.filter(r => r.kind === 'world' && isWorldEnabled(r.worldName)).length;
+        statsEl.textContent = `${statsEl.dataset.baseText}　·　${enabledCount} 本已开启`;
 
         renderGrid();
     } catch (err) {
@@ -348,6 +466,9 @@ function renderGrid() {
     const query = (panel.querySelector('#wbg-search').value || '').trim().toLowerCase();
 
     let rows = lastRows;
+    if (getSettings().onlyEnabled) {
+        rows = rows.filter(r => r.kind === 'world' && isWorldEnabled(r.worldName));
+    }
     if (query) {
         rows = rows.filter(r =>
             (r.worldName || '').toLowerCase().includes(query) ||
@@ -382,10 +503,15 @@ function renderGrid() {
 }
 
 function buildCard(row) {
+    // 只有真实存在的世界书才有"启用/停用"这回事；卡里写了但文件丢了的不算。
+    const canToggle = row.kind === 'world';
+    const enabled = canToggle ? isWorldEnabled(row.worldName) : false;
+
     const card = document.createElement('div');
     card.className = 'wbg-card';
     if (row.kind === 'missing') card.classList.add('wbg-card-missing');
     if (!row.owners.length && row.kind === 'world') card.classList.add('wbg-card-orphan');
+    if (canToggle) card.classList.add(enabled ? 'wbg-card-on' : 'wbg-card-off');
 
     // 卡面
     const thumb = document.createElement('div');
@@ -411,6 +537,15 @@ function buildCard(row) {
         badge.textContent = `${row.owners.length} 张卡`;
         badge.title = row.owners.map(o => o.name).join('\n');
         thumb.appendChild(badge);
+    }
+
+    // 状态标识：贴在卡面左下角，一眼看出开没开
+    let stateTag = null;
+    if (canToggle) {
+        stateTag = document.createElement('div');
+        stateTag.className = 'wbg-state';
+        stateTag.textContent = enabled ? '已开启' : '已关闭';
+        thumb.appendChild(stateTag);
     }
 
     // 文字区
@@ -439,6 +574,33 @@ function buildCard(row) {
     }
     meta.appendChild(sub);
 
+    // 开关按钮列（单独一行，避免和"点击卡片打开编辑器"打架）
+    if (canToggle) {
+        const bar = document.createElement('div');
+        bar.className = 'wbg-toggle-bar';
+
+        const sw = document.createElement('button');
+        sw.type = 'button';
+        sw.className = 'wbg-switch' + (enabled ? ' wbg-switch-on' : '');
+        sw.setAttribute('role', 'switch');
+        sw.setAttribute('aria-checked', enabled ? 'true' : 'false');
+        sw.title = enabled ? '点一下停用这本世界书' : '点一下启用这本世界书';
+        sw.innerHTML = `<span class="wbg-switch-knob"></span>`;
+        sw.addEventListener('click', (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            onToggleClick(row, sw, stateTag, card);
+        });
+
+        const label = document.createElement('span');
+        label.className = 'wbg-toggle-label';
+        label.textContent = enabled ? '已开启' : '已关闭';
+
+        bar.appendChild(sw);
+        bar.appendChild(label);
+        meta.appendChild(bar);
+    }
+
     card.appendChild(thumb);
     card.appendChild(meta);
 
@@ -446,7 +608,8 @@ function buildCard(row) {
         `显示名：${displayName(row)}`,
         `世界书文件名：${row.worldName}`,
         row.owners.length ? `绑定卡：${row.owners.map(o => o.name).join('、')}` : '绑定卡：无',
-    ].join('\n');
+        canToggle ? `当前状态：${enabled ? '已开启' : '已关闭'}` : '',
+    ].filter(Boolean).join('\n');
 
     // 点一下打开世界书编辑器（只读查看，不写数据）
     if (row.kind === 'world' && typeof openWorldInfoEditor === 'function') {
@@ -460,6 +623,90 @@ function buildCard(row) {
     }
 
     return card;
+}
+
+/**
+ * 点了卡片上的开关之后要做的事。
+ *
+ * 顺序：先切状态 → 再把界面刷成真实状态 → 最后弹个提示。
+ * 界面状态一律以 isWorldEnabled() 读到的真实数据为准，
+ * 不拿"用户以为点了什么"当结果，免得界面和酒馆对不上。
+ */
+function onToggleClick(row, swEl, stateTagEl, cardEl) {
+    const before = isWorldEnabled(row.worldName);
+    const after = toggleWorld(row.worldName);
+    const on = after;
+
+    // 卡片本体的亮暗
+    cardEl.classList.toggle('wbg-card-on', on);
+    cardEl.classList.toggle('wbg-card-off', !on);
+
+    // 开关按钮
+    swEl.classList.toggle('wbg-switch-on', on);
+    swEl.setAttribute('aria-checked', on ? 'true' : 'false');
+    swEl.title = on ? '点一下停用这本世界书' : '点一下启用这本世界书';
+
+    // 按钮右边那行字
+    const label = swEl.parentElement?.querySelector('.wbg-toggle-label');
+    if (label) label.textContent = on ? '已开启' : '已关闭';
+
+    // 卡面角上的小标
+    if (stateTagEl) stateTagEl.textContent = on ? '已开启' : '已关闭';
+
+    // 提示
+    if (after === before) {
+        // 没变化，说明操作没生效
+        toastWarn(`没能改掉这本书的状态，可能是不支持自动切换。`);
+    } else if (after) {
+        toastOk(`已开启：${displayName(row)}`);
+    } else {
+        toastOk(`已关闭：${displayName(row)}`);
+    }
+
+    refreshStatsOnly();
+}
+
+/**
+ * 只重算顶部那行统计（"共 N 本…其中 M 本已开启"），不重扫整张网格。
+ * 开关开合时用它，比整页刷新快，也不会把滚动位置弄丢。
+ */
+function refreshStatsOnly() {
+    const panel = ensurePanel();
+    const rows = lastRows;
+    const enabledCount = rows.filter(r =>
+        (r.kind === 'world') && isWorldEnabled(r.worldName)).length;
+    const base = panel.querySelector('#wbg-stats').dataset.baseText || '';
+    panel.querySelector('#wbg-stats').textContent =
+        `${base}　·　${enabledCount} 本已开启`;
+}
+
+/**
+ * 右下角飘一个小提示，1.6 秒后自己消失。
+ * 用自己写的而不是酒馆的 toastr，是为了不依赖酒馆内部实现。
+ */
+let toastTimer = null;
+function toast(msg, kind) {
+    let el = document.getElementById('wbg-toast');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'wbg-toast';
+        document.body.appendChild(el);
+    }
+    el.className = `wbg-toast wbg-toast-${kind} wbg-toast-show`;
+    el.textContent = msg;
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+        el.classList.remove('wbg-toast-show');
+    }, 1600);
+}
+function toastOk(msg) { toast(msg, 'ok'); }
+function toastWarn(msg) { toast(msg, 'warn'); }
+
+/**
+ * 当前总共开着一本世界书（用于顶部统计）。
+ */
+function countEnabledWorlds() {
+    return lastRows.filter(r => r.kind === 'world' && isWorldEnabled(r.worldName)).length;
 }
 
 function escapeHtml(s) {
@@ -488,7 +735,8 @@ function buildSettingsUI() {
             <div class="inline-drawer-content">
                 <p class="wbg-desc">
                     把世界书按「它绑定的角色卡的卡面」铺开显示，方便辨认哪本属于哪张卡。<br>
-                    只读不改：不会修改任何文件名或卡片内容。
+                    只读不改：不会修改任何文件名或卡片内容。<br>
+                    卡片上的开关可以直接开启／停用世界书，和酒馆自己界面里的状态是同一份。
                 </p>
                 <div class="wbg-settings-actions">
                     <button class="menu_button" id="wbg-open-panel">
@@ -535,6 +783,14 @@ export async function init() {
     const softRefresh = () => {
         if (panelEl && panelEl.classList.contains('wbg-open')) refresh(false);
     };
+    // 世界书的"启用/停用"变了（不管是在酒馆自己界面改的，还是在这插件里改的）
+    // 就只把网格重画一遍，不重扫文件，省时间也不会跳滚动条。
+    const restatOnly = () => {
+        if (!panelEl || !panelEl.classList.contains('wbg-open')) return;
+        if (!lastRows.length) return;
+        renderGrid();
+        refreshStatsOnly();
+    };
     const events = [
         event_types.CHARACTER_EDITED,
         event_types.CHARACTER_DELETED,
@@ -546,6 +802,19 @@ export async function init() {
     for (const ev of events) {
         try { eventSource.on(ev, softRefresh); } catch { /* 事件不存在就跳过 */ }
     }
+    // 这几件事只影响"哪本开着"，不影响配对关系 → 只重画状态
+    const stateEvents = [
+        event_types.WORLDINFO_SETTINGS_UPDATED,
+        event_types.WORLDINFO_UPDATED,
+    ];
+    for (const ev of stateEvents) {
+        if (ev === undefined) continue;
+        try { eventSource.on(ev, restatOnly); } catch { /* 事件不存在就跳过 */ }
+    }
+
+    // 防止同一帧里 softRefresh 和 restatOnly 都跑（WORLDINFO_UPDATED 两边都挂了）
+    // 简单起见：restatOnly 先跑，softRefresh 会因为 panel 已重画而只是再刷新一次，
+    // 开销很小，可以接受。
 
     console.log(LOG_PREFIX, '已加载');
 }
@@ -568,12 +837,16 @@ async function waitForSettingsContainer(timeoutMs = 10000) {
 }
 
 // 供浏览器控制台调试用：
-//   WorldbookGallery.open()     打开面板
-//   WorldbookGallery.refresh()  重扫
-//   WorldbookGallery.index()    看配对结果
+//   WorldbookGallery.open()               打开面板
+//   WorldbookGallery.refresh()            重扫
+//   WorldbookGallery.index()              看配对结果
+//   WorldbookGallery.isOn('世界书名')      看某本开着没
+//   WorldbookGallery.toggle('世界书名')    开关某本
 window.WorldbookGallery = {
     open: openPanel,
     refresh,
     collectRows,
     index: buildIndex,
+    isOn: isWorldEnabled,
+    toggle: toggleWorld,
 };
