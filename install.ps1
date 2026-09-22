@@ -21,8 +21,21 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # ---- 路径配置 ----
-$PluginName = 'worldbook-gallery'
-$SourceDir  = $PSScriptRoot
+# 这个扩展可能以两种文件夹名存在：
+#   从 Git URL 安装时，酒馆用仓库名 → sillytavern-visual-worldbook
+#   手动拷贝本文件夹时               → worldbook-gallery
+# 两种情况都要能认出来。
+$PluginNames = @('sillytavern-visual-worldbook', 'worldbook-gallery')
+$SourceDir   = $PSScriptRoot
+
+function Find-InstalledDir {
+    param([string]$ThirdPartyPath)
+    foreach ($n in $PluginNames) {
+        $p = Join-Path $ThirdPartyPath $n
+        if (Test-Path $p) { return $p }
+    }
+    return $null
+}
 
 function Find-TavernRoot {
     param([string]$Hint)
@@ -61,7 +74,10 @@ function Find-TavernRoot {
 
 $TavernRoot = Find-TavernRoot -Hint $TavernRoot
 $ThirdParty = if ($TavernRoot) { Join-Path $TavernRoot 'public\scripts\extensions\third-party' } else { $null }
-$TargetDir  = if ($ThirdParty) { Join-Path $ThirdParty $PluginName } else { $null }
+# 手动安装用本文件夹原名；已经装过的话，按实际存在的那个名字走
+$ManualName = 'worldbook-gallery'
+$InstalledDir = if ($ThirdParty) { Find-InstalledDir -ThirdPartyPath $ThirdParty } else { $null }
+$TargetDir = if ($ThirdParty) { Join-Path $ThirdParty $ManualName } else { $null }
 
 function Write-Head($text) {
     Write-Host ''
@@ -89,21 +105,30 @@ switch ($Action) {
         Write-Host "插件源目录：$SourceDir"
         Write-Host "酒馆目录  ：$TavernRoot"
         Write-Host ''
-        if (Test-Path $TargetDir) {
-            $files = Get-ChildItem $TargetDir -Recurse -File
+        if ($InstalledDir) {
+            $files = Get-ChildItem $InstalledDir -Recurse -File -Exclude '.git'
             Write-Host "状态：已安装" -ForegroundColor Green
-            Write-Host "位置：$TargetDir"
+            Write-Host "位置：$InstalledDir"
             Write-Host "文件：$($files.Count) 个"
         }
         else {
             Write-Host "状态：未安装" -ForegroundColor Yellow
-            Write-Host "（酒馆的 third-party 里现在没有 $PluginName 这个文件夹）"
+            Write-Host "（酒馆的 third-party 里没有找到这个扩展）"
         }
     }
 
     'install' {
         Write-Head '安装世界书卡面管理'
         Assert-TavernRoot
+
+        # 已经装过了（用 Git URL 装的那种）就别重复装
+        if ($InstalledDir) {
+            Write-Host "这个扩展已经装过了：$InstalledDir" -ForegroundColor Yellow
+            Write-Host ''
+            Write-Host '如果你是用酒馆的「从 Git URL 安装」，那就不需要再跑这个脚本了，' -ForegroundColor Cyan
+            Write-Host '直接在酒馆的扩展管理里点「更新」即可。'
+            exit 0
+        }
 
         if (Test-Path $TargetDir) {
             Write-Host "目标位置已经有同名文件夹了：$TargetDir" -ForegroundColor Yellow
@@ -141,13 +166,15 @@ switch ($Action) {
     'uninstall' {
         Write-Head '卸载世界书卡面管理'
 
-        if (-not (Test-Path $TargetDir)) {
-            Write-Host "酒馆里本来就没有这个插件：$TargetDir" -ForegroundColor Yellow
+        $victim = if ($InstalledDir) { $InstalledDir } else { $TargetDir }
+
+        if (-not (Test-Path $victim)) {
+            Write-Host "酒馆里本来就没有这个插件" -ForegroundColor Yellow
             Write-Host '不需要做任何事。' -ForegroundColor Green
             exit 0
         }
 
-        Write-Host "将删除：$TargetDir" -ForegroundColor Yellow
+        Write-Host "将删除：$victim" -ForegroundColor Yellow
         Write-Host '（只删这一个文件夹，酒馆其它内容和你所有的卡、世界书都不受影响）'
         $ans = Read-Host '确认删除？(输入 yes 继续，其它任意键取消)'
         if ($ans -ne 'yes') {
@@ -155,7 +182,7 @@ switch ($Action) {
             exit 0
         }
 
-        Remove-Item $TargetDir -Recurse -Force
+        Remove-Item $victim -Recurse -Force
         Write-Host '已删除。刷新酒馆页面即可。' -ForegroundColor Green
         Write-Host '如果还想用，随时重新跑一次 install。'
     }
