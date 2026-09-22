@@ -45,6 +45,7 @@ const stubs = {
         export const world_names = [];
         export let selected_world_info = [];
         export const openWorldInfoEditor = () => {};
+        export const updateWorldInfoList = async () => {};
     `,
     [path.join(pub, 'scripts', 'extensions.js')]: `
         export const extension_settings = {};

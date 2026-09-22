@@ -6,8 +6,8 @@
     "js": "index.js",
     "css": "style.css",
     "author": "岑参",
-    "version": "0.2.0",
-    "homePage": "https://github.com/SillyTavern/SillyTavern",
+    "version": "0.2.1",
+    "homePage": "https://github.com/cccscccc/sillytavern-visual-worldbook",
     "hooks": {
         "activate": "init"
     }

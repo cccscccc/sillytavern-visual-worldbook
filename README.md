@@ -165,29 +165,37 @@ https://github.com/cccscccc/sillytavern-visual-worldbook
 
 ```bash
 node _selftest.mjs              # 配对逻辑，15 项
-node _selftest_toggle.mjs       # 开关逻辑，22 项
+node _selftest_toggle.mjs       # 开关逻辑，43 项
 node _verify_load.mjs           # 真加载模拟（验证能装能跑）
 node _verify_ps1_encoding.mjs   # PowerShell 脚本编码，10 项
+node _verify_api.mjs            # 核对用到的酒馆符号真实存在，11 个
 ```
 
 - `_selftest.mjs` 覆盖配对逻辑的 15 项断言（正常绑定、重名导入产生的后缀、
   孤立世界书、缺失世界书、卡片自带世界书、三种展示名风格等）。
-- `_selftest_toggle.mjs` 覆盖开关逻辑的 22 项断言（读状态、开、关、
-  不重复操作、显式指定、名字含逗号的兜底、失败时不假装成功、空名字等）。
+- `_selftest_toggle.mjs` 覆盖开关逻辑的 43 项断言（读状态、开、关、
+  不重复操作、显式指定、名字含逗号的兜底、失败时不假装成功、空名字、
+  **借酒馆 change 通道回写是否真的同步到 `globalSelect`**、
+  **下拉框里没这本书时不能误清空状态**、**下拉框还是空的时候要先热身**等）。
 - `_verify_load.mjs` 会造一棵假的酒馆目录树真 `import()` 一次，
   确认扩展能加载、hook 存在、`init` 能跑起来。
 - `_verify_ps1_encoding.mjs` 确认 `install.ps1` 有 UTF-8 BOM（没有的话
   Windows PowerShell 5.1 会把中文当 GBK 读，脚本直接跑不起来）。
+- `_verify_api.mjs` 逐个核对本扩展从酒馆源码里导入的每个符号是否真实存在
+  （用 `TAVERN_ROOT=/path/to/SillyTavern node _verify_api.mjs` 指定酒馆目录）。
+  导入一个不存在的符号会让整个扩展加载失败，所以这项必须在真酒馆目录上跑一次。
 
 ---
 
 ## 已知限制
 
-- 世界书名字里如果**含逗号**，面板的开关会绕开酒馆的斜杠命令通道，
+- 世界书名里如果**含逗号**，面板的开关会绕开酒馆的斜杠命令通道，
   改用直接操作界面下拉框的方式。功能一致，但如果哪次不生效，
   可以看浏览器控制台里的日志（前缀 `[Worldbook Gallery]`）。
 - 开关只控制**全局启用**列表。酒馆还有「按角色卡绑定」「按聊天绑定」两套独立机制，
   本扩展不干预那两套。
+- 若酒馆的世界书面板从未打开过，本扩展会先自动刷新一次世界书列表
+  （等价于帮你把面板打开一下），再执行开关。这一步只重画列表，不改内容、不写文件。
 
 ---
 

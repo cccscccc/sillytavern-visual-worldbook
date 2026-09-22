@@ -33,6 +33,7 @@ import {
     world_names,
     selected_world_info,
     openWorldInfoEditor,
+    updateWorldInfoList,
 } from '../../../world-info.js';
 import { extension_settings } from '../../../extensions.js';
 
@@ -250,25 +251,43 @@ function displayName(row) {
 // 「已启用的世界书（全局有效）」那个多选框，对应内部变量 selected_world_info。
 // 卡自带的世界书导入后就是加进这个全局列表的，所以这里控制的就是它。
 //
-// 为什么不用酒馆现成的 onWorldInfoChange()（第一版用过，实测点不动）：
-//   那个函数内部是这样找世界书的（world-info.js 第 5657/5660 行）：
+// 为什么不用酒馆现成的 onWorldInfoChange(args, text) 那条"斜杠命令"入口：
+//   第一版试过，实测点不动。那个入口内部是这样找世界书的
+//   （world-info.js 第 5654~5660 行）：
 //       text.trim().toLowerCase().split(',')   // 先转小写、再按逗号切
 //       getWIElement(worldName)                // 再去 #world_info 下拉框里配对
-//   而 getWIElement 是拿“下拉框里每一项的文字”跟名字逐字比（第 2090 行）。
+//   而 getWIElement 是拿"下拉框里每一项的文字"跟名字逐字比（第 2090 行）。
 //   这条链上任何一环不满足就静默失败：
 //     - 下拉框没被填充（要打开过世界书面板才会填，见 updateWorldInfoList）
 //     - 名字里有逗号 → 被切碎
 //     - 名字匹配不上 → 直接"找不到这个世界书"
 //   结果就是：点了开关，什么也没发生，只在右下角看到"没能改掉"。
 //
-// 现在的做法：
-//   selected_world_info 在 world-info.js 第 66 行是 `export let`，
-//   导出的是**数组本身**。ES module 的 imported binding 不能整体重新赋值，
-//   但**可以就地改数组内容**（push / splice），改的就是酒馆在用的那份数据
-//   （第 85 行 `Object.assign(world_info, { globalSelect: selected_world_info })`
-//    证明它就是这个数组本体，不是副本）。
-//   所以直接 push/splice，再补一次"保存设置 + 发事件"，
-//   让酒馆界面和世界书列表跟着刷新。
+//   注意：这里说的是**带参数**的那个入口（斜杠命令用）。
+//   无参数的 onWorldInfoChange('__notSlashCommand__') 是另一回事——
+//   它是酒馆自己下拉框 change 的处理函数，正是我们要借用的通道，见下面第二层。
+//
+// 现在的做法（直连数据 + 借酒馆自己的回写通道）：
+//
+//   第一层 —— 直接改数据：
+//     selected_world_info 在 world-info.js 第 66 行是 `export let`，
+//     导出的是**数组本身**。ES module 的 imported binding 不能整体重新赋值，
+//     但**可以就地改数组内容**（push / splice），改的就是酒馆在用的那份数据。
+//
+//   第二层 —— 借酒馆自己的回写通道（关键，0.2.1 才补上）：
+//     光改数组不够。酒馆存盘和界面渲染，读的都是 world_info.globalSelect，
+//     而这个字段只在 world-info.js 第 84 行那个**私有**的 saveSettingsDebounced 里
+//     才被同步（第 85 行 Object.assign(world_info, { globalSelect: selected_world_info })）。
+//     我们从 script.js 导入的那个同名 saveSettingsDebounced 是**另一个函数**，
+//     它只调 saveSettings() 存盘，压根不碰 globalSelect —— 这就是"开关拨过去了、
+//     酒馆原生界面却没变"的根因。
+//
+//     酒馆自带的正确通道是这个（第 6057 行，initWorldInfo 里绑的）：
+//         $('#world_info').on('mousedown change', ...) → onWorldInfoChange('__notSlashCommand__')
+//     它会把下拉框里选中的项读回来、覆盖 selected_world_info，
+//     再走第 5719~5723 行：改数组 + saveSettingsDebounced() + 发 WORLDINFO_SETTINGS_UPDATED。
+//     所以我们的做法是：先把下拉框的勾选状态对齐好，再 trigger('change')，
+//     剩下的全部交给酒馆自己完成。
 
 /**
  * 这本书当前启用了没。
@@ -280,17 +299,31 @@ function isWorldEnabled(worldName) {
 /**
  * 切换一本书的启用状态。
  *
+ * 这是异步的，因为可能要先补一次"世界书列表加载"。
+ * 不 await 也能用（数据和存盘都会照做），只是 UI 刷新可能慢一拍。
+ *
  * @param {string} worldName 世界书名
  * @param {boolean} [forceOn] 指定开启或关闭；不传则按当前状态取反
- * @returns {boolean} 操作后是否处于启用状态（失败时返回原状态）
+ * @returns {Promise<boolean>} 操作后是否处于启用状态（失败时返回原状态）
  */
-function toggleWorld(worldName, forceOn) {
+async function toggleWorld(worldName, forceOn) {
     if (!worldName) return false;
 
     const before = isWorldEnabled(worldName);
     const wantOn = (forceOn === undefined) ? !before : Boolean(forceOn);
 
     if (wantOn === before) return before;   // 已经是目标状态，不用动
+
+    // ---- 0. 先保证酒馆那个下拉框是"新鲜可用"的 ----
+    //    没有这一步，如果用户从没打开过世界书面板，下拉框就是空的：
+    //      a) 我们的回写通道会拿不到这本书（syncWorldInfoSelect 返回 0）
+    //      b) 酒馆存盘时写进去的 globalSelect 也可能缺斤少两
+    //    所以这里主动补一次列表（等价于酒馆打开面板时做的事）。
+    try {
+        await ensureWorldListReady();
+    } catch (err) {
+        console.warn(LOG_PREFIX, '刷新世界书列表失败，继续按现有状态操作', err);
+    }
 
     // ---- 1. 直接改那份数据（这一步是必须成功的） ----
     let changed = false;
@@ -320,14 +353,21 @@ function toggleWorld(worldName, forceOn) {
         return isWorldEnabled(worldName);
     }
 
-    // ---- 2. 把界面上的下拉框勾选状态对齐（尽力而为，失败也不影响功能） ----
+    // ---- 2. 让酒馆自己把这次改动接管过去 ----
+    // 顺序很重要：先对齐下拉框勾选，再触发 change。
+    // 触发后酒馆会走 onWorldInfoChange('__notSlashCommand__')，
+    // 从下拉框读回选中项 → 覆盖 selected_world_info → 同步 world_info.globalSelect
+    // → 存盘 → 发事件刷新界面。这一整套是酒馆原生逻辑，比我们自己拼更可靠。
     try {
         syncWorldInfoSelect(worldName, wantOn);
+        triggerWorldInfoChange();
     } catch (err) {
-        console.warn(LOG_PREFIX, '同步下拉框勾选状态失败（不影响启用状态）', err);
+        console.warn(LOG_PREFIX, '借酒馆通道回写失败，已回退到插件自备路径（数据仍然是对的）', err);
     }
 
-    // ---- 3. 存盘 + 通知酒馆各部分刷新 ----
+    // ---- 3. 兜底：无论上面成不成，存盘 + 通知都补一次 ----
+    // 重复调用是安全的（debounce 会合并）。
+    // 万一第 2 步因为下拉框还没填充而没生效，这里至少保证数据落盘。
     try {
         saveSettingsDebounced();
     } catch (err) {
@@ -342,26 +382,95 @@ function toggleWorld(worldName, forceOn) {
 }
 
 /**
+ * 确保酒馆的「世界书列表 + 那个下拉框」是新鲜可用的。
+ *
+ * 为什么需要这一步（实测踩过）：
+ *   酒馆的 #world_info 下拉框不是天生就有内容的，只有在
+ *   updateWorldInfoList()（world-info.js 第 2061 行）跑过之后才会被填满。
+ *   它是个 async 函数，内部会：
+ *     - 从 /api/settings/get 重新拿一遍世界书名字列表
+ *     - 清空并重建 #world_info 和 #world_editor_select 的 <option>
+ *     - 按 selected_world_info 决定哪些 option 默认勾上
+ *   所以我们先调它一次，等于"帮用户把世界书面板打开了一下"。
+ *
+ * 安全说明：
+ *   updateWorldInfoList 只读文件列表、只重画下拉框，不会改世界书内容、
+ *   不会写任何文件，也不会改 selected_world_info。属于纯刷新操作。
+ */
+async function ensureWorldListReady() {
+    const $ = window.jQuery;
+    if (!$) return;
+
+    const $wi = $('#world_info');
+    const hasOptions = $wi.length && $wi.find('option[value!=""]').length > 0;
+    const hasNames = Array.isArray(world_names) && world_names.length > 0;
+
+    if (hasOptions && hasNames) return;   // 已经是好的，不用动
+
+    if (typeof updateWorldInfoList !== 'function') {
+        console.warn(LOG_PREFIX, '拿不到 updateWorldInfoList，跳过热身（不影响直接改数据）');
+        return;
+    }
+
+    console.log(LOG_PREFIX, '世界书列表还没准备好，先刷新一次');
+    await updateWorldInfoList();
+}
+
+/**
  * 把酒馆界面上那个多选框（#world_info）里的勾选状态，对齐成我们改动后的样子。
  *
- * 注意：这一步是"锦上添花"，不是必需。就算它什么都不做，
- * 启用状态也已经改好了（第 1 步直接改了数据）。
- * 之所以还要做，是为了让已经打开着的世界书面板立刻显示正确。
+ * 这一步是「借酒馆通道回写」的前置动作，不是可有可无的装饰：
+ * 酒馆的 onWorldInfoChange('__notSlashCommand__') 是**从下拉框读值**的
+ * （world-info.js 第 5705 行 `$('#world_info').val()`），
+ * 所以必须先把下拉框改成我们想要的样子，再触发 change。
  *
- * 用 jQuery 的 prop('selected') 直接对单个选项操作，
- * 不依赖名字能不能匹配上 —— 按 option 的文字找，找不到就算了。
+ * @returns {number} 改到了几个 option；为 0 说明下拉框里没有这本书（可能还没渲染）
  */
 function syncWorldInfoSelect(worldName, on) {
     const $ = window.jQuery;
-    if (!$) return;
+    if (!$) return 0;
     const $wi = $('#world_info');
-    if (!$wi.length) return;
+    if (!$wi.length) return 0;
 
+    let hit = 0;
     $wi.find('option').each(function () {
         if ($(this).text() === worldName) {
             $(this).prop('selected', on);
+            hit++;
         }
     });
+    if (hit === 0) {
+        // 下拉框里没有这本书 → 后面 trigger('change') 会把它清空，
+        // 所以这种情况必须提前拦住，别去触发。
+        console.warn(LOG_PREFIX, '下拉框里没找到这本书，跳过回写通道：', JSON.stringify(worldName));
+    }
+    return hit;
+}
+
+/**
+ * 触发 #world_info 的 change，把控制权交还给酒馆。
+ *
+ * 只在「下拉框确实非空」时才触发：因为 onWorldInfoChange 的第一句就是
+ * `if (world_names.length === 0) { e.preventDefault(); return; }`，
+ * 而且它拿 `val()` 读值——万一下拉框还是空的，触发一次等于把
+ * selected_world_info 覆盖成空数组，反而把状态弄丢。
+ *
+ * @returns {boolean} 是否触发了
+ */
+function triggerWorldInfoChange() {
+    const $ = window.jQuery;
+    if (!$) return false;
+    const $wi = $('#world_info');
+    if (!$wi.length) return false;
+
+    const names = Array.isArray(world_names) ? world_names : [];
+    if (names.length === 0) {
+        console.warn(LOG_PREFIX, '世界书列表还是空的（updateWorldInfoList 可能没跑过），跳过回写通道');
+        return false;
+    }
+
+    $wi.trigger('change');
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -615,7 +724,7 @@ function buildCard(row) {
         sw.addEventListener('click', (e) => {
             e.stopPropagation();
             e.preventDefault();
-            onToggleClick(row, sw, stateTag, card);
+            void onToggleClick(row, sw, stateTag, card);
         });
 
         const label = document.createElement('span');
@@ -654,30 +763,31 @@ function buildCard(row) {
 /**
  * 点了卡片上的开关之后要做的事。
  *
- * 顺序：先切状态 → 再把界面刷成真实状态 → 最后弹个提示。
+ * 顺序：先切状态 → 等酒馆那边也同步完 → 再把界面刷成真实状态 → 最后弹个提示。
  * 界面状态一律以 isWorldEnabled() 读到的真实数据为准，
  * 不拿"用户以为点了什么"当结果，免得界面和酒馆对不上。
+ *
+ * 注意 toggleWorld 是 async 的（可能要补一次世界书列表刷新），
+ * 所以这里先乐观地把界面切成目标状态，等它返回后再用真实状态校正一次，
+ * 这样点下去就有即时反馈，不会卡一下。
  */
-function onToggleClick(row, swEl, stateTagEl, cardEl) {
+async function onToggleClick(row, swEl, stateTagEl, cardEl) {
     const before = isWorldEnabled(row.worldName);
-    const after = toggleWorld(row.worldName);
-    const on = after;
 
-    // 卡片本体的亮暗
-    cardEl.classList.toggle('wbg-card-on', on);
-    cardEl.classList.toggle('wbg-card-off', !on);
+    // 先乐观预热一下界面：按"取反"来画，让人立刻看到反应
+    const optimistic = !before;
+    paintToggle(swEl, stateTagEl, cardEl, optimistic);
 
-    // 开关按钮
-    swEl.classList.toggle('wbg-switch-on', on);
-    swEl.setAttribute('aria-checked', on ? 'true' : 'false');
-    swEl.title = on ? '点一下停用这本世界书' : '点一下启用这本世界书';
+    let after;
+    try {
+        after = await toggleWorld(row.worldName);
+    } catch (err) {
+        console.error(LOG_PREFIX, '切换出错', row.worldName, err);
+        after = isWorldEnabled(row.worldName);   // 出错就回到真实状态
+    }
 
-    // 按钮右边那行字
-    const label = swEl.parentElement?.querySelector('.wbg-toggle-label');
-    if (label) label.textContent = on ? '已开启' : '已关闭';
-
-    // 卡面角上的小标
-    if (stateTagEl) stateTagEl.textContent = on ? '已开启' : '已关闭';
+    // 用真实状态校正界面
+    paintToggle(swEl, stateTagEl, cardEl, after);
 
     // 提示
     if (after === before) {
@@ -693,6 +803,25 @@ function onToggleClick(row, swEl, stateTagEl, cardEl) {
     }
 
     refreshStatsOnly();
+}
+
+/**
+ * 把开关相关的三处界面元素画成指定状态。
+ * 抽出来是因为 onToggleClick 里要画两次（乐观一次、校正一次）。
+ */
+function paintToggle(swEl, stateTagEl, cardEl, on) {
+    if (cardEl) {
+        cardEl.classList.toggle('wbg-card-on', on);
+        cardEl.classList.toggle('wbg-card-off', !on);
+    }
+    if (swEl) {
+        swEl.classList.toggle('wbg-switch-on', on);
+        swEl.setAttribute('aria-checked', on ? 'true' : 'false');
+        swEl.title = on ? '点一下停用这本世界书' : '点一下启用这本世界书';
+        const label = swEl.parentElement?.querySelector('.wbg-toggle-label');
+        if (label) label.textContent = on ? '已开启' : '已关闭';
+    }
+    if (stateTagEl) stateTagEl.textContent = on ? '已开启' : '已关闭';
 }
 
 /**
