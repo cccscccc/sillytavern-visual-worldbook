@@ -1,0 +1,14 @@
+{
+    "display_name": "Worldbook Gallery (世界书卡面管理)",
+    "loading_order": 120,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "岑参",
+    "version": "0.1.0",
+    "homePage": "https://github.com/SillyTavern/SillyTavern",
+    "hooks": {
+        "activate": "init"
+    }
+}
