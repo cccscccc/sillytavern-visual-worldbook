@@ -33,7 +33,6 @@ import {
     world_names,
     selected_world_info,
     openWorldInfoEditor,
-    onWorldInfoChange,
 } from '../../../world-info.js';
 import { extension_settings } from '../../../extensions.js';
 
@@ -251,10 +250,25 @@ function displayName(row) {
 // 「已启用的世界书（全局有效）」那个多选框，对应内部变量 selected_world_info。
 // 卡自带的世界书导入后就是加进这个全局列表的，所以这里控制的就是它。
 //
-// 实现要点：
-//   selected_world_info 虽然被导出，但 ES module 的 imported binding 是只读的，
-//   外部不能直接 push / splice。所以必须走酒馆自己导出的 onWorldInfoChange()，
-//   它会一并完成：改状态、刷新酒馆界面、弹提示、保存设置、发事件通知。
+// 为什么不用酒馆现成的 onWorldInfoChange()（第一版用过，实测点不动）：
+//   那个函数内部是这样找世界书的（world-info.js 第 5657/5660 行）：
+//       text.trim().toLowerCase().split(',')   // 先转小写、再按逗号切
+//       getWIElement(worldName)                // 再去 #world_info 下拉框里配对
+//   而 getWIElement 是拿“下拉框里每一项的文字”跟名字逐字比（第 2090 行）。
+//   这条链上任何一环不满足就静默失败：
+//     - 下拉框没被填充（要打开过世界书面板才会填，见 updateWorldInfoList）
+//     - 名字里有逗号 → 被切碎
+//     - 名字匹配不上 → 直接"找不到这个世界书"
+//   结果就是：点了开关，什么也没发生，只在右下角看到"没能改掉"。
+//
+// 现在的做法：
+//   selected_world_info 在 world-info.js 第 66 行是 `export let`，
+//   导出的是**数组本身**。ES module 的 imported binding 不能整体重新赋值，
+//   但**可以就地改数组内容**（push / splice），改的就是酒馆在用的那份数据
+//   （第 85 行 `Object.assign(world_info, { globalSelect: selected_world_info })`
+//    证明它就是这个数组本体，不是副本）。
+//   所以直接 push/splice，再补一次"保存设置 + 发事件"，
+//   让酒馆界面和世界书列表跟着刷新。
 
 /**
  * 这本书当前启用了没。
@@ -273,69 +287,81 @@ function isWorldEnabled(worldName) {
 function toggleWorld(worldName, forceOn) {
     if (!worldName) return false;
 
-    // 世界书名字里若含逗号，酒馆的 onWorldInfoChange 会按逗号切分导致误伤，
-    // 这种情况直接用 select 元素兜底，不走那个函数。
-    const hasComma = worldName.includes(',');
-
     const before = isWorldEnabled(worldName);
     const wantOn = (forceOn === undefined) ? !before : Boolean(forceOn);
 
     if (wantOn === before) return before;   // 已经是目标状态，不用动
 
+    // ---- 1. 直接改那份数据（这一步是必须成功的） ----
+    let changed = false;
     try {
-        if (hasComma) {
-            setWorldEnabledViaSelect(worldName, wantOn);
+        if (wantOn) {
+            // 先防重：万一里面已经有了，别加第二遍
+            if (!selected_world_info.includes(worldName)) {
+                selected_world_info.push(worldName);
+                changed = true;
+            }
         } else {
-            // silent 传 false：让酒馆自己弹「已开启：xxx」的提示，
-            // 这样酒馆那边的反馈风格是统一的（我们自己也再飘一个小提示）。
-            onWorldInfoChange({ state: wantOn ? 'on' : 'off', silent: false }, worldName);
+            // 用 while 把同名项全部清掉（理论上只有一个，稳一点）
+            let idx = selected_world_info.indexOf(worldName);
+            while (idx !== -1) {
+                selected_world_info.splice(idx, 1);
+                changed = true;
+                idx = selected_world_info.indexOf(worldName);
+            }
         }
     } catch (err) {
-        console.error(LOG_PREFIX, '切换世界书状态失败', worldName, err);
+        console.error(LOG_PREFIX, '改写启用列表失败', worldName, err);
         return before;
     }
 
-    // 状态实际变了没，以真实数据为准
-    const after = isWorldEnabled(worldName);
-    if (after !== wantOn) {
-        // 兜底：onWorldInfoChange 没生效时，直接操作界面上的 select
-        try { setWorldEnabledViaSelect(worldName, wantOn); } catch { /* 忽略 */ }
+    if (!changed) {
+        // 数据没变（极少见），如实返回真实状态
         return isWorldEnabled(worldName);
     }
 
-    return after;
+    // ---- 2. 把界面上的下拉框勾选状态对齐（尽力而为，失败也不影响功能） ----
+    try {
+        syncWorldInfoSelect(worldName, wantOn);
+    } catch (err) {
+        console.warn(LOG_PREFIX, '同步下拉框勾选状态失败（不影响启用状态）', err);
+    }
+
+    // ---- 3. 存盘 + 通知酒馆各部分刷新 ----
+    try {
+        saveSettingsDebounced();
+    } catch (err) {
+        console.warn(LOG_PREFIX, '保存设置失败', err);
+    }
+    try {
+        eventSource.emit(event_types.WORLDINFO_SETTINGS_UPDATED);
+    } catch { /* 事件不存在就跳过 */ }
+
+    // ---- 4. 以真实数据为准返回 ----
+    return isWorldEnabled(worldName);
 }
 
 /**
- * 兜底方案：直接操作酒馆界面上那个多选框（#world_info），
- * 触发它自己的 change 事件，让酒馆按正常流程处理。
+ * 把酒馆界面上那个多选框（#world_info）里的勾选状态，对齐成我们改动后的样子。
  *
- * 用在世界书名含逗号等 onWorldInfoChange 不方便处理的场合。
+ * 注意：这一步是"锦上添花"，不是必需。就算它什么都不做，
+ * 启用状态也已经改好了（第 1 步直接改了数据）。
+ * 之所以还要做，是为了让已经打开着的世界书面板立刻显示正确。
+ *
+ * 用 jQuery 的 prop('selected') 直接对单个选项操作，
+ * 不依赖名字能不能匹配上 —— 按 option 的文字找，找不到就算了。
  */
-function setWorldEnabledViaSelect(worldName, on) {
-    const $wi = window.jQuery ? window.jQuery('#world_info') : null;
-    if (!$wi || !$wi.length) return;
+function syncWorldInfoSelect(worldName, on) {
+    const $ = window.jQuery;
+    if (!$) return;
+    const $wi = $('#world_info');
+    if (!$wi.length) return;
 
-    // 找到对应该名字的 option，按它的 value（索引）来选
-    let targetVal = null;
     $wi.find('option').each(function () {
-        if (window.jQuery(this).text() === worldName) {
-            targetVal = window.jQuery(this).val();
+        if ($(this).text() === worldName) {
+            $(this).prop('selected', on);
         }
     });
-    if (targetVal === null) return;
-
-    const current = $wi.val();
-    let list = Array.isArray(current) ? current.map(String) : (current ? [String(current)] : []);
-    const tv = String(targetVal);
-
-    if (on) {
-        if (!list.includes(tv)) list.push(tv);
-    } else {
-        list = list.filter(v => v !== tv);
-    }
-
-    $wi.val(list).trigger('change');
 }
 
 // ---------------------------------------------------------------------------
@@ -655,8 +681,11 @@ function onToggleClick(row, swEl, stateTagEl, cardEl) {
 
     // 提示
     if (after === before) {
-        // 没变化，说明操作没生效
-        toastWarn(`没能改掉这本书的状态，可能是不支持自动切换。`);
+        // 没变化。新实现是直接改数据，正常不会走到这里；
+        // 真走到了说明世界书名字跟酒馆里的对不上（比如名字里带了特殊字符）。
+        console.warn(LOG_PREFIX, '状态没变，名字可能是', JSON.stringify(row.worldName),
+            '当前启用列表是', JSON.stringify(selected_world_info));
+        toastWarn(`没能改掉「${displayName(row)}」的状态。按 F12 看控制台有详细信息。`);
     } else if (after) {
         toastOk(`已开启：${displayName(row)}`);
     } else {

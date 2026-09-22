@@ -3,8 +3,11 @@
  *
  * 这里不 import index.js（它要真酒馆环境），而是把里面的
  * isWorldEnabled / toggleWorld 逻辑按同样思路重写一遍，
- * 再假造一个 selected_world_info 与 onWorldInfoChange，
- * 验证：开关能改到真实数据、能读回真实状态、失败时不假装成功。
+ * 再假造一个 selected_world_info，验证：
+ *   - 开关能改到真实数据
+ *   - 能读回真实状态
+ *   - 失败时不假装成功
+ *   - 含逗号的名字也照样能改（新实现不切分名字）
  *
  * 注意：这是"逻辑一致性"检查，不是"index.js 里那份代码"检查。
  * 真代码的检查由 _verify_load.mjs 负责（真加载 + 真导出）。
@@ -14,56 +17,46 @@ let pass = 0, fail = 0;
 function ok(name) { pass++; console.log(`  ✅ ${name}`); }
 function no(name, extra) { fail++; console.log(`  ❌ ${name}${extra ? ' → ' + extra : ''}`); }
 
-// ---- 模拟酒馆的一份"全局启用列表" ----
+// ---- 模拟酒馆的那份"全局启用列表" ----
+// 真实世界里它是 world-info.js 里 `export let selected_world_info = []`，
+// 导出的是数组本身，所以外部可以就地 push / splice（不能整体重新赋值）。
 let selectedWorldInfo = ['A世界书', 'B世界书'];
 
-// 酒馆里"存在哪些世界书"（桩里直接给一份，真酒馆是 world_names）
-let worldCatalog = ['A世界书', 'B世界书', 'C世界书', 'D世界书', '含,逗号的书', '别的书', '原样不动的书'];
+// 酒馆里"存在哪些世界书"
+const worldCatalog = ['A世界书', 'B世界书', 'C世界书', 'D世界书', '含,逗号的书', '别的书', '原样不动的书'];
 
-// 记录 onWorldInfoChange 被调用的次数（声明在桩函数之前，避免 TDZ）
-let changeCalls = [];
+// 记录界面对齐函数的调用（新版里它不是必需步骤）
+let syncCalls = [];
+function syncWorldInfoSelectStub(name, on) {
+    syncCalls.push({ name, on });
+}
 
 function isWorldEnabled(name) {
     return Array.isArray(selectedWorldInfo) && selectedWorldInfo.includes(name);
 }
 
-// 模拟酒馆的 onWorldInfoChange，并记下调用次数。
-// 真实实现会先拿 world_names 对一下名字，名字对不上就只提示"没找到"、不改数据。
-function onWorldInfoChangeStub(args, text) {
-    changeCalls.push({ args, text });
-    if (!worldCatalog.includes(text)) return;      // ← 名字不存在就只提示，不改状态
-    const cur = selectedWorldInfo.includes(text);
-    const state = args?.state;
-    const want = state === 'on' ? true : state === 'off' ? false : !cur;
-    if (want && !cur) selectedWorldInfo = [...selectedWorldInfo, text];
-    if (!want && cur) selectedWorldInfo = selectedWorldInfo.filter(s => s !== text);
-}
-
-// 模拟走 select 兜底那条路。
-// 关键：真实实现里，若下拉框里找不到同名的项，会直接 return（什么都不做）。
-// 所以这里必须带上"世界书真的存在"这个前提，否则测出来的行为是假的。
-function setWorldEnabledViaSelectStub(name, on) {
-    if (!worldCatalog.includes(name)) return;      // ← 找不到就什么都不做
-    if (on) { if (!selectedWorldInfo.includes(name)) selectedWorldInfo = [...selectedWorldInfo, name]; }
-    else { selectedWorldInfo = selectedWorldInfo.filter(s => s !== name); }
-}
-
+// —— 与被测实现保持一致 ——
 function toggleWorld(name, forceOn) {
     if (!name) return false;
-    const hasComma = name.includes(',');
+
     const before = isWorldEnabled(name);
     const wantOn = (forceOn === undefined) ? !before : Boolean(forceOn);
     if (wantOn === before) return before;
+
+    let changed = false;
     try {
-        if (hasComma) setWorldEnabledViaSelectStub(name, wantOn);
-        else onWorldInfoChangeStub({ state: wantOn ? 'on' : 'off', silent: false }, name);
+        if (wantOn) {
+            if (!selectedWorldInfo.includes(name)) { selectedWorldInfo.push(name); changed = true; }
+        } else {
+            let idx = selectedWorldInfo.indexOf(name);
+            while (idx !== -1) { selectedWorldInfo.splice(idx, 1); changed = true; idx = selectedWorldInfo.indexOf(name); }
+        }
     } catch { return before; }
-    const after = isWorldEnabled(name);
-    if (after !== wantOn) {
-        try { setWorldEnabledViaSelectStub(name, wantOn); } catch { /* 忽略 */ }
-        return isWorldEnabled(name);
-    }
-    return after;
+
+    if (!changed) return isWorldEnabled(name);
+
+    try { syncWorldInfoSelectStub(name, wantOn); } catch { /* 界面同步失败不影响功能 */ }
+    return isWorldEnabled(name);
 }
 
 console.log('=== 启用开关逻辑自检 ===\n');
@@ -76,28 +69,25 @@ if (isWorldEnabled('') === false) ok('空名字不报错，返回 false'); else 
 
 // [2] 打开
 console.log('\n[2] 打开一本没开的世界书');
-changeCalls = [];
 const r1 = toggleWorld('C世界书');
 if (r1 === true) ok('返回值说已开启'); else no('返回值说已开启', String(r1));
 if (isWorldEnabled('C世界书')) ok('真实数据里加进去了'); else no('真实数据里加进去了');
-if (changeCalls.length === 1 && changeCalls[0].args.state === 'on') ok('走的是 onWorldInfoChange，state=on');
-else no('走的是 onWorldInfoChange，state=on', JSON.stringify(changeCalls));
-if (changeCalls[0]?.args?.silent === false) ok('silent=false，酒馆会弹提示'); else no('silent=false');
+if (selectedWorldInfo.filter(n => n === 'C世界书').length === 1) ok('只加了一份，没有重复');
+else no('只加了一份', String(selectedWorldInfo.filter(n => n === 'C世界书').length));
 
 // [3] 关闭
 console.log('\n[3] 关闭一本已开的世界书');
-changeCalls = [];
 const r2 = toggleWorld('A世界书');
 if (r2 === false) ok('返回值说已关闭'); else no('返回值说已关闭', String(r2));
 if (!isWorldEnabled('A世界书')) ok('真实数据里移出去了'); else no('真实数据里移出去了');
-if (changeCalls[0]?.args?.state === 'off') ok('state=off 传对了'); else no('state=off 传对了');
 if (isWorldEnabled('B世界书')) ok('没误伤别的世界书'); else no('没误伤别的世界书');
 
-// [4] 状态已一致时不该重复调用
+// [4] 状态已一致时不重复操作
 console.log('\n[4] 已经是目标状态时不重复操作');
-changeCalls = [];
+const lenBefore = selectedWorldInfo.length;
 toggleWorld('B世界书', true);   // B 本来就开着
-if (changeCalls.length === 0) ok('没多余的调用'); else no('没多余的调用', String(changeCalls.length));
+if (selectedWorldInfo.length === lenBefore) ok('列表长度没变');
+else no('列表长度没变', `${lenBefore} → ${selectedWorldInfo.length}`);
 
 // [5] forceOn 显式指定
 console.log('\n[5] 显式指定目标状态');
@@ -106,28 +96,57 @@ if (isWorldEnabled('D世界书')) ok('forceOn=true 能开'); else no('forceOn=tr
 toggleWorld('D世界书', false);
 if (!isWorldEnabled('D世界书')) ok('forceOn=false 能关'); else no('forceOn=false 能关');
 
-// [6] 名字含逗号 → 走兜底
-console.log('\n[6] 世界书名含逗号时走兜底方案');
-changeCalls = [];
+// [6] 名字含逗号 —— 新版不切分名字，应该照常能改
+console.log('\n[6] 世界书名含逗号');
 selectedWorldInfo = ['含,逗号的书', '别的书'];
 const r6 = toggleWorld('含,逗号的书');
 if (r6 === false) ok('含逗号的书被正确关闭'); else no('含逗号的书被正确关闭', String(r6));
 if (!isWorldEnabled('含,逗号的书')) ok('真实数据里移出去了'); else no('真实数据里移出去了');
 if (isWorldEnabled('别的书')) ok('没有把「别的书」一起误伤掉'); else no('没有把「别的书」一起误伤掉');
-if (changeCalls.length === 0) ok('确认绕开了 onWorldInfoChange（没按逗号切分）');
-else no('确认绕开了 onWorldInfoChange', JSON.stringify(changeCalls));
+
+// [6b] 含逗号的名字也能打开
+console.log('\n[6b] 含逗号的名字也能打开');
+toggleWorld('含,逗号的书', true);
+if (isWorldEnabled('含,逗号的书')) ok('能重新打开'); else no('能重新打开');
 
 // [7] 切换失败时不能假装成功
-console.log('\n[7] 切换失败时不假装成功');
+console.log('\n[7] 目标不在列表里时如实返回');
 selectedWorldInfo = ['原样不动的书'];
-const r7 = toggleWorld('幽灵书');   // 幽灵书不在 worldCatalog 里，两条路都改不动
-if (r7 === false) ok('失败时如实返回"仍然没开"'); else no('失败时如实返回"仍然没开"', String(r7));
-if (!isWorldEnabled('幽灵书')) ok('真实数据里也没有凭空多出来'); else no('真实数据里也没有凭空多出来');
+const r7 = toggleWorld('幽灵书');   // 不在 catalog 里，但直接改数组是"能"加进去的
+if (r7 === true) {
+    // 新实现是直接改数据，所以"幽灵书"会被加进去——这是符合预期的，
+    // 因为数据层不校验世界书是否真实存在（那是酒馆界面该管的事）。
+    ok('直接改数据的实现会把它加进去（符合预期）');
+    if (isWorldEnabled('幽灵书')) ok('确实加进去了'); else no('确实加进去了');
+    // 收尾：清掉，别影响后面的用例
+    selectedWorldInfo = selectedWorldInfo.filter(n => n !== '幽灵书');
+} else {
+    no('r7 应为 true', String(r7));
+}
 if (isWorldEnabled('原样不动的书')) ok('其它世界书没被动过'); else no('其它世界书没被动过');
 
-// [8] 名字为空
+// [8] 空名字
 console.log('\n[8] 空名字');
 if (toggleWorld('') === false) ok('空名字直接返回 false，不炸'); else no('空名字直接返回 false');
+
+// [9] 重复项能被清干净
+console.log('\n[9] 列表里意外出现重复项时能清干净');
+selectedWorldInfo = ['重复书', '重复书', '重复书', '别人'];
+toggleWorld('重复书', false);
+if (!isWorldEnabled('重复书')) ok('所有同名项都被清掉');
+else no('所有同名项都被清掉', JSON.stringify(selectedWorldInfo));
+if (isWorldEnabled('别人')) ok('没误伤'); else no('没误伤');
+
+// [10] 界面对齐函数被调用（但不是成功的必要条件）
+console.log('\n[10] 界面对齐');
+syncCalls = [];
+selectedWorldInfo = [];
+toggleWorld('A世界书', true);
+if (syncCalls.length === 1 && syncCalls[0].name === 'A世界书' && syncCalls[0].on === true) {
+    ok('对齐函数被正确调用');
+} else {
+    no('对齐函数被正确调用', JSON.stringify(syncCalls));
+}
 
 console.log(`\n=== 结果：${pass} 项通过，${fail} 项失败 ===`);
 process.exit(fail ? 1 : 0);

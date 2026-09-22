@@ -1,0 +1,43 @@
+Fix worldbook toggle doing nothing: write the array directly
+
+The toggle relied on the tavern's own onWorldInfoChange(), which looks a
+world up like this (world-info.js lines 5657/5660):
+
+    text.trim().toLowerCase().split(',')
+    getWIElement(worldName)
+
+and getWIElement (line 2090) matches each option's text against the name.
+Any of these breaks the whole chain silently:
+  - the #world_info select is not populated yet (it only fills in once the
+    World Info panel has been opened, see updateWorldInfoList)
+  - the name contains a comma and gets split apart
+  - the name does not match an option
+
+Symptom: clicking the switch did nothing, only a "could not change" toast.
+
+Now we write selected_world_info directly. It is declared as
+`export let selected_world_info = []` (line 66) and line 85 does
+Object.assign(world_info, { globalSelect: selected_world_info }), so the
+exported array IS the live data, not a copy. Imported bindings cannot be
+reassigned, but the array contents can be mutated in place -- so push/splice
+works and reaches exactly the data the tavern uses.
+
+After writing we then save settings, emit WORLDINFO_SETTINGS_UPDATED, and
+best-effort align the select's selected props so an already-open World Info
+panel shows the change. Those steps are no longer required for the toggle
+to work.
+
+Also:
+- drop the now-unused onWorldInfoChange import
+- use a while loop when removing so duplicate entries are all cleared
+- guard against double-adding the same name
+- the failure toast now points at the console instead of claiming the
+  feature is unsupported
+- _selftest_toggle.mjs rewritten for the new implementation, 23 assertions
+  (adds comma-in-name on/off, duplicate cleanup, double-add guard, and
+  that the select alignment is called)
+- _verify_load.mjs stub: selected_world_info is now `export let`,
+  onWorldInfoChange stub removed
+
+Verified: syntax OK, 15 pairing + 23 toggle + 10 ps1 assertions all pass,
+and the real-load simulation still loads with the init hook callable.
