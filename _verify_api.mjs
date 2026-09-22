@@ -2,23 +2,71 @@
  * 运行时 API 可用性验证
  *
  * 检查 index.js 里用到的每个导入名，是否真的从对应文件导出。
- * 上一版就是靠"看代码以为对"翻车的，所以这里逐个符号确认。
+ * 光看代码容易漏，这里逐个符号确认。
  *
  * 支持两种导出写法：
  *   export const foo / export let foo / export function foo
- *   export { a, b, foo, c };   ← 多行块式导出，容易漏检
+ *   export { a, b, foo, c };   ← 多行块式导出，正则容易漏检
+ *
+ * 酒馆目录的找法：优先用环境变量 TAVERN_ROOT，其次从本脚本位置往上找。
+ * 例如：TAVERN_ROOT="D:/SillyTavern" node _verify_api.mjs
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const TAVERN = 'F:/J/SillyTavern/SillyTavern-1.18.0/SillyTavern-1.18.0';
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const SRC_INDEX = path.join(HERE, 'index.js');
+
+/**
+ * 找酒馆根目录：先看环境变量，再从常见位置猜。
+ * 判据是「存在 public/scripts/world-info.js」。
+ */
+function findTavernRoot() {
+    const isTavern = (p) => p && fs.existsSync(path.join(p, 'public', 'scripts', 'world-info.js'));
+
+    if (process.env.TAVERN_ROOT && isTavern(process.env.TAVERN_ROOT)) {
+        return path.resolve(process.env.TAVERN_ROOT);
+    }
+
+    const candidates = [];
+    // 从脚本所在位置往上找
+    let walk = HERE;
+    for (let i = 0; i < 8; i++) {
+        walk = path.dirname(walk);
+        if (walk === path.dirname(walk)) break;
+        candidates.push(walk);
+    }
+    // 常见盘符扫一遍
+    for (const drive of ['C:', 'D:', 'E:', 'F:', 'G:']) {
+        const base = drive + path.sep;
+        if (!fs.existsSync(base)) continue;
+        let items = [];
+        try { items = fs.readdirSync(base, { withFileTypes: true }); } catch { continue; }
+        for (const it of items) {
+            if (it.isDirectory() && /sillytavern/i.test(it.name)) {
+                candidates.push(path.join(base, it.name));
+            }
+        }
+    }
+    return candidates.find(isTavern) ?? null;
+}
+
+const TAVERN = findTavernRoot();
+
+if (!TAVERN) {
+    console.log('=== 运行时 API 可用性验证 ===');
+    console.log('');
+    console.log('没找到酒馆目录，跳过这项检查。');
+    console.log('如果要用，指定一下：TAVERN_ROOT="D:/SillyTavern" node _verify_api.mjs');
+    process.exit(0);
+}
 
 // 从 index.js 的每个 import 语句里抽出「文件名 → 符号清单」
-const LOCAL = 'E:/ai/AI WORK/03_SillyTavern_MCP/worldbook-gallery/index.js';
-const src = fs.readFileSync(LOCAL, 'utf8');
+const src = fs.readFileSync(SRC_INDEX, 'utf8');
 
-// 把 import { ... } from '...' 抽成组
 const groups = [];
 const re = /import\s*\{([\s\S]*?)\}\s*from\s*['"]([^'"]+)['"]/g;
 let m;
@@ -47,7 +95,6 @@ function getExports(filePath) {
         x[1].split(',').forEach(part => {
             part = part.trim();
             if (!part) return;
-            // `foo as bar` → 对外名是 bar；`/** 注释 */ foo` → 取 foo
             part = part.replace(/\/\*[\s\S]*?\*\//g, '').trim();
             const asMatch = part.match(/\bas\s+([A-Za-z_$][\w$]*)/);
             const name = asMatch ? asMatch[1] : part.replace(/^\s*type\s+/, '').trim();
@@ -57,27 +104,25 @@ function getExports(filePath) {
     return out;
 }
 
-// 把相对 import 路径解析成真实文件
-function resolveInTavern(spec, extDir) {
-    return path.resolve(extDir, spec);
-}
-
+// 模拟"装进酒馆后的扩展目录"，用于解析相对 import
 const EXT_DIR = path.join(
-    TAVERN, 'public', 'scripts', 'extensions', 'third-party',
-    'sillytavern-visual-worldbook',
+    TAVERN, 'public', 'scripts', 'extensions', 'third-party', 'worldbook-gallery',
 );
 
-console.log('=== 运行时 API 可用性验证 ===\n');
+console.log('=== 运行时 API 可用性验证 ===');
+console.log('酒馆目录：' + TAVERN);
+console.log('');
 
 let pass = 0, fail = 0;
 
 for (const g of groups) {
-    const target = resolveInTavern(g.from, EXT_DIR);
+    const target = path.resolve(EXT_DIR, g.from);
     const rel = target.slice(TAVERN.length + 1).replace(/\\/g, '/');
     console.log(`来源文件: ${rel}`);
 
     if (!fs.existsSync(target)) {
-        console.log(`  ❌ 文件不存在！\n`);
+        console.log('  ❌ 文件不存在！（说明相对路径层数不对）');
+        console.log('');
         fail += g.names.length;
         continue;
     }
